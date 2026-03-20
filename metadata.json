@@ -1,0 +1,5 @@
+{
+  "name": "Sequence Score",
+  "description": "Interactive spreadsheet tool for sequence scoring with drag-and-drop row reordering and cell manipulation logic.",
+  "requestFramePermissions": []
+}
