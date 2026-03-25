@@ -58,7 +58,7 @@ def calculate_score(df):
 
     # Third, count of empty before-last anilox cells, indicating added stations
     added_counts = count_empty_to_filled_transitions_df(df.iloc[:, 5:13])
-    number_added_stations = added_counts.sum()
+    number_added_stations = sum(added_counts.values())
 
     total_score = (7 * total_anilox_changes) + (4 * total_ink_changes) + number_added_stations
     
