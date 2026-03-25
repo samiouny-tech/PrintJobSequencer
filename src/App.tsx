@@ -36,11 +36,18 @@ export default function App() {
   const [draggedCell, setDraggedCell] = useState<{ rowIndex: number; colIndex: number } | null>(null);
   const [isScoring, setIsScoring] = useState(false);
   const [isPaneVisible, setIsPaneVisible] = useState(true);
+  const [editingCell, setEditingCell] = useState<{ rowIndex: number; colIndex: number } | null>(null);
 
-  // Load default data
-  useEffect(() => {
+  // Dynamic column detection
+  const aniloxIndices = headers.reduce((acc, h, i) => h.toLowerCase().startsWith('anilox') ? [...acc, i] : acc, [] as number[]);
+  const inkIndices = headers.reduce((acc, h, i) => h.toLowerCase().startsWith('ink') ? [...acc, i] : acc, [] as number[]);
+
+  const loadSampleData = useCallback(() => {
     fetch('/sample_data.csv')
-      .then(res => res.text())
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load sample data: ${res.statusText}`);
+        return res.text();
+      })
       .then(csvText => {
         Papa.parse(csvText, {
           complete: (results) => {
@@ -56,14 +63,24 @@ export default function App() {
                     const val = r[idx];
                     return (val === undefined || val === null) ? "" : String(val);
                   });
-                  return { id: `row-${i}`, data: paddedData };
+                  return { id: `row-${i}-${Date.now()}`, data: paddedData };
                 });
               setRows(initialRows);
+              setHistory([]);
+              setScoreResults(null);
             }
           }
         });
+      })
+      .catch(err => {
+        console.error("Error loading sample data:", err);
       });
   }, []);
+
+  // Load default data
+  useEffect(() => {
+    loadSampleData();
+  }, [loadSampleData]);
 
   const saveToHistory = useCallback(() => {
     setHistory(prev => [...prev, JSON.parse(JSON.stringify(rows))]);
@@ -133,7 +150,7 @@ export default function App() {
     setIsScoring(true);
     setIsPaneVisible(true);
     setTimeout(() => {
-      const results = calculateScore(headers, rows.map(r => r.data));
+      const results = calculateScore(headers, rows.map(r => r.data), aniloxIndices, inkIndices);
       setScoreResults(results);
       setIsScoring(false);
     }, 500);
@@ -155,13 +172,20 @@ export default function App() {
         ["Total Score", scoreResults.total_score],
         ["Anilox Changes", scoreResults.anilox_changes],
         ["Ink Changes", scoreResults.ink_changes],
-        ["Skipped Stations", scoreResults.skipped_stations],
+        ["Added Stations", scoreResults.added_stations],
         [],
         ["Anilox Details"],
         ["Station", "Changes"]
       ];
 
       Object.entries(scoreResults.anilox_details).forEach(([station, count]) => {
+        scoringData.push([station, count]);
+      });
+
+      scoringData.push([]);
+      scoringData.push(["Added Station Details"]);
+      scoringData.push(["Station", "Transitions"]);
+      Object.entries(scoreResults.added_station_details).forEach(([station, count]) => {
         scoringData.push([station, count]);
       });
 
@@ -182,9 +206,8 @@ export default function App() {
 
   // Cell Drag and Drop Logic
   const onCellDragStart = (rowIndex: number, colIndex: number) => {
-    // Boundaries: Columns 6 through 13 inclusive (1-based)
-    // 0-indexed: 5 through 12
-    if (colIndex >= 5 && colIndex <= 12) {
+    // Boundaries: Anilox columns
+    if (aniloxIndices.includes(colIndex)) {
       setDraggedCell({ rowIndex, colIndex });
     }
   };
@@ -200,23 +223,38 @@ export default function App() {
       return;
     }
 
-    // 2. Direction: 1 cell left or 1 cell right
-    const diff = Math.abs(sourceColIndex - targetColIndex);
+    // 2. Target must be an anilox column
+    if (!aniloxIndices.includes(targetColIndex)) {
+      setDraggedCell(null);
+      return;
+    }
+
+    // 3. Direction: 1 cell left or 1 cell right
+    const sourceAniloxIdx = aniloxIndices.indexOf(sourceColIndex);
+    const targetAniloxIdx = aniloxIndices.indexOf(targetColIndex);
+    const diff = Math.abs(sourceAniloxIdx - targetAniloxIdx);
+    
     if (diff !== 1) {
       setDraggedCell(null);
       return;
     }
 
-    // 3. Destination must be empty
+    // 4. Destination must be empty
     const targetValue = rows[targetRowIndex].data[targetColIndex];
     if (targetValue && targetValue.trim() !== "") {
       setDraggedCell(null);
       return;
     }
 
-    // 4. Mirror move: [r, c+8] to [r, target_c+8]
-    const mirrorSourceCol = sourceColIndex + 8;
-    const mirrorTargetCol = targetColIndex + 8;
+    // 5. Mirror move: find corresponding Ink columns
+    const mirrorSourceCol = inkIndices[sourceAniloxIdx];
+    const mirrorTargetCol = inkIndices[targetAniloxIdx];
+    
+    if (mirrorSourceCol === undefined || mirrorTargetCol === undefined) {
+      setDraggedCell(null);
+      return;
+    }
+
     const mirrorTargetValue = rows[targetRowIndex].data[mirrorTargetCol];
 
     // If mirror destination is not empty, reject
@@ -244,8 +282,31 @@ export default function App() {
     setScoreResults(null);
   };
 
-  const handleRowReorder = (newRows: SequenceRow[]) => {
+  const addRow = () => {
     saveToHistory();
+    const newRow: SequenceRow = {
+      id: `row-${Date.now()}`,
+      data: Array(headers.length).fill("")
+    };
+    setRows(prev => [...prev, newRow]);
+  };
+
+  const deleteRow = (id: string) => {
+    saveToHistory();
+    setRows(prev => prev.filter(r => r.id !== id));
+    setScoreResults(null);
+  };
+
+  const handleCellEdit = (rowIndex: number, colIndex: number, value: string) => {
+    const newRows = [...rows];
+    const rowData = [...newRows[rowIndex].data];
+    rowData[colIndex] = value;
+    newRows[rowIndex] = { ...newRows[rowIndex], data: rowData };
+    setRows(newRows);
+    setScoreResults(null);
+  };
+
+  const handleRowReorder = (newRows: SequenceRow[]) => {
     setRows(newRows);
     setScoreResults(null);
   };
@@ -271,6 +332,14 @@ export default function App() {
             Undo
           </button>
 
+          <button 
+            onClick={loadSampleData}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-[#F1F1F1] transition-colors text-sm font-medium"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Reset
+          </button>
+
           <label className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-[#F1F1F1] cursor-pointer transition-colors text-sm font-medium">
             <Upload className="w-4 h-4" />
             Upload
@@ -279,6 +348,13 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button 
+            onClick={addRow}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-[#F1F1F1] transition-colors text-sm font-medium"
+          >
+            <LayoutDashboard className="w-4 h-4" />
+            Add Row
+          </button>
           <button 
             onClick={handleScore}
             disabled={isScoring}
@@ -313,13 +389,14 @@ export default function App() {
               <thead className="sticky top-0 z-40 bg-[#F8F9FA] shadow-sm">
                 <tr>
                   <th className="w-10 p-2 border-b border-r border-[#E4E3E0]"></th>
+                  <th className="w-10 p-2 border-b border-r border-[#E4E3E0]"></th>
                   {headers.map((header, i) => (
                     <th 
                       key={i} 
                       className={cn(
                         "p-3 text-left font-mono italic uppercase tracking-wider text-[10px] text-[#8E9299] border-b border-r border-[#E4E3E0]",
-                        i >= 5 && i <= 12 ? "bg-blue-50/50" : "",
-                        i >= 13 && i <= 20 ? "bg-orange-50/50" : ""
+                        aniloxIndices.includes(i) ? "bg-blue-50/50" : "",
+                        inkIndices.includes(i) ? "bg-orange-50/50" : ""
                       )}
                     >
                       {header}
@@ -333,29 +410,62 @@ export default function App() {
                     key={row.id} 
                     value={row}
                     as="tr"
+                    onDragStart={saveToHistory}
                     className="group hover:bg-[#F1F1F1] transition-colors"
                   >
                     <td className="p-2 border-b border-r border-[#E4E3E0] text-center cursor-grab active:cursor-grabbing">
                       <GripVertical className="w-4 h-4 text-[#8E9299] opacity-0 group-hover:opacity-100 transition-opacity" />
                     </td>
-                    {row.data.map((cell, colIndex) => (
-                      <td 
-                        key={colIndex}
-                        draggable={colIndex >= 5 && colIndex <= 12 && cell !== ""}
-                        onDragStart={() => onCellDragStart(rowIndex, colIndex)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={() => onCellDrop(rowIndex, colIndex)}
-                        className={cn(
-                          "p-2 border-b border-r border-[#E4E3E0] truncate font-mono transition-all",
-                          colIndex >= 5 && colIndex <= 12 ? "bg-blue-50/20" : "",
-                          colIndex >= 13 && colIndex <= 20 ? "bg-orange-50/20" : "",
-                          draggedCell?.rowIndex === rowIndex && draggedCell?.colIndex === colIndex ? "opacity-30 scale-95" : "",
-                          cell === "" ? "bg-gray-50/30" : "cursor-default"
-                        )}
+                    <td className="p-2 border-b border-r border-[#E4E3E0] text-center">
+                      <button 
+                        onClick={() => deleteRow(row.id)}
+                        className="text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
                       >
-                        {cell}
-                      </td>
-                    ))}
+                        ×
+                      </button>
+                    </td>
+                    {row.data.map((cell, colIndex) => {
+                      const isAnilox = aniloxIndices.includes(colIndex);
+                      const isInk = inkIndices.includes(colIndex);
+                      const isMetadata = !isAnilox && !isInk;
+                      const isEditing = editingCell?.rowIndex === rowIndex && editingCell?.colIndex === colIndex;
+
+                      return (
+                        <td 
+                          key={colIndex}
+                          draggable={isAnilox && cell !== ""}
+                          onDragStart={() => onCellDragStart(rowIndex, colIndex)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => onCellDrop(rowIndex, colIndex)}
+                          onClick={() => isMetadata && setEditingCell({ rowIndex, colIndex })}
+                          className={cn(
+                            "p-2 border-b border-r border-[#E4E3E0] truncate font-mono transition-all relative",
+                            isAnilox ? "bg-blue-50/20" : "",
+                            isInk ? "bg-orange-50/20" : "",
+                            draggedCell?.rowIndex === rowIndex && draggedCell?.colIndex === colIndex ? "opacity-30 scale-95" : "",
+                            // Highlight mirror cell when dragging
+                            draggedCell?.rowIndex === rowIndex && 
+                            inkIndices[aniloxIndices.indexOf(draggedCell.colIndex)] === colIndex ? "ring-2 ring-orange-400 ring-inset" : "",
+                            cell === "" ? "bg-gray-50/30" : "cursor-default",
+                            isMetadata ? "cursor-text hover:bg-gray-100/50" : ""
+                          )}
+                        >
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              className="absolute inset-0 w-full h-full px-2 bg-white outline-none ring-2 ring-blue-500 z-10"
+                              value={cell}
+                              onFocus={saveToHistory}
+                              onChange={(e) => handleCellEdit(rowIndex, colIndex, e.target.value)}
+                              onBlur={() => setEditingCell(null)}
+                              onKeyDown={(e) => e.key === 'Enter' && setEditingCell(null)}
+                            />
+                          ) : (
+                            cell
+                          )}
+                        </td>
+                      );
+                    })}
                   </Reorder.Item>
                 ))}
               </Reorder.Group>
@@ -416,7 +526,7 @@ export default function App() {
                         {scoreResults.total_score}
                       </div>
                       <div className="mt-4 text-[11px] text-[#8E9299] font-mono">
-                        (7 × {scoreResults.anilox_changes}) + (4 × {scoreResults.ink_changes}) + {scoreResults.skipped_stations}
+                        (7 × {scoreResults.anilox_changes}) + (4 × {scoreResults.ink_changes}) + {scoreResults.added_stations}
                       </div>
                     </div>
 
@@ -431,8 +541,8 @@ export default function App() {
                         <div className="text-2xl font-medium">{scoreResults.ink_changes}</div>
                       </div>
                       <div className="bg-white/5 rounded-xl p-4 border border-white/10 col-span-2">
-                        <label className="text-[9px] font-mono uppercase tracking-widest text-[#8E9299] block mb-1">Skipped Stations</label>
-                        <div className="text-2xl font-medium">{scoreResults.skipped_stations}</div>
+                        <label className="text-[9px] font-mono uppercase tracking-widest text-[#8E9299] block mb-1">Added Stations</label>
+                        <div className="text-2xl font-medium">{scoreResults.added_stations}</div>
                       </div>
                     </div>
 
@@ -473,6 +583,28 @@ export default function App() {
                                     initial={{ width: 0 }}
                                     animate={{ width: `${Math.min(100, ((count as number) / 10) * 100)}%` }}
                                     className="h-full bg-orange-500"
+                                  />
+                                </div>
+                                <span>{count}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-mono uppercase tracking-widest text-[#8E9299] border-b border-white/10 pb-2">Added Stations</h3>
+                        
+                        <div className="space-y-2">
+                          {Object.entries(scoreResults.added_station_details).map(([station, count]) => (
+                            <div key={station} className="flex items-center justify-between text-[11px] font-mono">
+                              <span className="text-[#8E9299]">{station}</span>
+                              <div className="flex items-center gap-2">
+                                <div className="h-1 bg-green-500/20 rounded-full w-24 overflow-hidden">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${Math.min(100, ((count as number) / 10) * 100)}%` }}
+                                    className="h-full bg-green-500"
                                   />
                                 </div>
                                 <span>{count}</span>
