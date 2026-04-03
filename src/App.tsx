@@ -37,6 +37,8 @@ export default function App() {
   const [isScoring, setIsScoring] = useState(false);
   const [isPaneVisible, setIsPaneVisible] = useState(true);
   const [editingCell, setEditingCell] = useState<{ rowIndex: number; colIndex: number } | null>(null);
+  const [fixTopRow, setFixTopRow] = useState(true);
+  const [isOptimizing, setIsOptimizing] = useState(false);
 
   // Dynamic column detection
   const aniloxIndices = headers.reduce((acc, h, i) => h.toLowerCase().startsWith('anilox') ? [...acc, i] : acc, [] as number[]);
@@ -154,6 +156,50 @@ export default function App() {
       setScoreResults(results);
       setIsScoring(false);
     }, 500);
+  };
+
+  const handleOptimize = async () => {
+    if (rows.length === 0) return;
+    setIsOptimizing(true);
+    saveToHistory();
+
+    try {
+      const response = await fetch('/api/optimize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          data: rows.map(r => r.data),
+          headers: headers,
+          fixFirstRow: fixTopRow
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Optimization failed');
+      }
+
+      const result = await response.json();
+      
+      const newRows = result.data.map((r: string[], i: number) => ({
+        id: `row-opt-${i}-${Date.now()}`,
+        data: r
+      }));
+
+      setRows(newRows);
+      
+      // Update scoring immediately
+      const results = calculateScore(headers, newRows.map((r: any) => r.data), aniloxIndices, inkIndices);
+      setScoreResults(results);
+      setIsPaneVisible(true);
+    } catch (error) {
+      console.error("Optimization error:", error);
+      alert(`Optimization failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsOptimizing(false);
+    }
   };
 
   const handleExportExcel = () => {
@@ -345,6 +391,33 @@ export default function App() {
             Upload
             <input type="file" accept=".csv,.xlsx" className="hidden" onChange={handleFileUpload} />
           </label>
+
+          <div className="h-6 w-px bg-[#E4E3E0]" />
+
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={handleOptimize}
+              disabled={isOptimizing || rows.length === 0}
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-1.5 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-sm font-bold uppercase tracking-wider"
+            >
+              {isOptimizing ? <RotateCcw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+              Optimize
+            </button>
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <div className="relative flex items-center">
+                <input 
+                  type="checkbox" 
+                  checked={fixTopRow}
+                  onChange={(e) => setFixTopRow(e.target.checked)}
+                  className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-slate-300 checked:border-blue-600 checked:bg-blue-600 transition-all"
+                />
+                <svg className="absolute h-4 w-4 pointer-events-none hidden peer-checked:block stroke-white mt-1 ml-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              </div>
+              <span className="text-xs font-medium text-[#8E9299] group-hover:text-[#1A1A1A] transition-colors">Fix top row</span>
+            </label>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
